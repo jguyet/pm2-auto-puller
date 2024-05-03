@@ -1,9 +1,18 @@
 const io = require ("@pm2/io");
 const pm2 = require("pm2");
 const async = require("async");
+const exec = require('child_process').exec;
 
 let IS_FETCHING = false; // Whether we are currently fetching the latest version for all processes.
 let LAST_CHECK = false; // The last time we checked for updates.
+
+async function execute(command) {
+	return new Promise((resolve) => {
+		exec(command,function(err,stdout,stderr){
+			resolve(stdout);
+		});
+	});
+}
 
 /**
  * fetchLatestVersion()
@@ -15,6 +24,12 @@ async function fetchLatestVersion()
 
 	log("Fetching latest version for all processes..");
 	LAST_CHECK = Date.now();
+
+	const githubApiBearerToken = io.getConfig()?.githubApiBearerToken;
+	if (githubApiBearerToken === undefined) {
+		logError('Empty githubApiBearerToken (pm2 set pm2-auto-puller:githubApiBearerToken [TOKEN])');
+		return ;
+	}
 
 	return new Promise(async (resolve, reject) => {
 		// Fetch all processes.
@@ -31,24 +46,52 @@ async function fetchLatestVersion()
 			// Iterate through all processes and pull latest version.
 			async.forEachLimit(allProcesses, 1, (process, next) => {
 				fetchStats.checked.push(process.name);
-
 				if (
-					!process?.pm2_env || // Skip if no pm2_env available.
-					process?.pm2_env != "online" || // Or if the process is not online.
-					!process.pm2_env?.versioning // Or if the process has no configured version control.
+					process?.pm2_env?.versioning?.repo_path === undefined
 				) {
+					logError(`${process.name} versioning repo_path not found!`);
 					fetchStats.skipped.push(process.name);
 					return next();
 				}
-
-				log(`Checking updates for ${process.name}..`);
-				pm2.pullAndReload(process.name, (error, metadata) => {
-					if (error) return next(error); // Already up to date.
-
-					if (metadata) log(`Successfully pulled latest version for '${process.name}'!`, true);
-					fetchStats.updated.push(process.name);
+				if (
+					process?.pm2_env.status !== 'online'
+				) {
+					logError(`${process.name} status not online => ${process?.pm2_env.status}`);
+					fetchStats.skipped.push(process.name);
 					return next();
-				});
+				}
+				log(`Process Path => ${process?.pm2_env?.versioning?.repo_path}`);
+				log(`process Status => ${process.name} - ${process?.pm2_env.status}`)
+				log(`Fetching updates for ${process.name}..`);
+				execute(`cd ${process?.pm2_env?.versioning?.repo_path} && git -c credential.helper='!f() { echo "username=ninja"; echo "password=${githubApiBearerToken}"; }; f' fetch`)
+					.then((fetchResult) => {
+						log(`Fetching branchName for ${process.name}..`);
+						execute(`cd ${process?.pm2_env?.versioning?.repo_path} && git branch --show-current`)
+							.then((branch) => {
+								execute(`cd ${process?.pm2_env?.versioning?.repo_path} && git diff HEAD...origin/${branch}`)
+								.then((diffResult) => {
+									if (diffResult === undefined || diffResult.replace(/ /gm, '') === '') {
+										log(`No Changes => ${process.name} - ${process?.pm2_env.status}`)
+										fetchStats.skipped.push(process.name);
+										return next();
+									}
+									console.log(`Diff Result [${diffResult}]`);
+									log(`Pulling updates for ${process.name}..`);
+
+									execute(`cd ${process?.pm2_env?.versioning?.repo_path} && git -c credential.helper='!f() { echo "username=ninja"; echo "password=${githubApiBearerToken}"; }; f' pull`)
+									.then((pullResult) => {
+										log(`Reload process for ${process.name}..`);
+										pm2.reload(process.name, (error, metadata) => {
+											if (error) return next(error); // Already up to date.
+
+											if (metadata) log(`Successfully pulled latest version for '${process.name}'!`, true);
+											fetchStats.updated.push(process.name);
+											return next();
+										});
+									});
+								});
+							});
+					});
 			}, () => {
 				// All processes have been checked.
 				IS_FETCHING = false;
@@ -66,10 +109,13 @@ async function fetchLatestVersion()
  * @param {String} 	message 	The message to log.
  * @param {Boolean} force 		Whether to force log the message regardless of logging setting.
  */
-function log(message, force = false)
-{
-	if (!force && !io.getConfig()?.logging) return;
-	return console.log("[pm2-auto-pull]:", message);
+function log(message, force = false) {
+	// if (!force && !io.getConfig()?.logging) return;
+	return console.log(`[${(new Date()).toISOString()}] - [pm2-auto-puller]:`, message);
+}
+
+function logError(message, force = false) {
+	return console.error(`[${(new Date()).toISOString()}] - [pm2-auto-puller]:`, message);
 }
 
 // pm2 module configuration and initialization.
@@ -77,7 +123,8 @@ io.init({
 	human_info: [
 		["Update Check Interval", `${io.getConfig()?.interval || 30000}ms`],
 		["Last Check", (LAST_CHECK ? new Date(LAST_CHECK).toLocaleString() : "Never")],
-		["Verbose Logging", io.getConfig()?.logging ? "Enabled" : "Disabled"]
+		["Verbose Logging", io.getConfig()?.logging ? "Enabled" : "Disabled"],
+		["Github API Bearer Token", `${io.getConfig()?.githubApiBearerToken || 'Empty'}`],
 	]
 }).initModule({}, (error) => {
 	if (error) return console.error("[pm2-auto-pull]: Failed to initialize module!", error);

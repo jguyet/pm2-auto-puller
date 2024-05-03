@@ -1,7 +1,7 @@
 {
 	"name": "pm2-auto-puller",
 	"author": "Jguyet",
-	"version": "1.0.1",
+	"version": "1.0.11",
 	"license": "LGPL-3.0-or-later",
 	"description": "A pm2 module that automatically pulls the latest git version for your pm2 processes. (Based on ImSkully program)",
 	"main": "app.js",
@@ -20,10 +20,10 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/ImSkully/pm2-auto-pull.git"
+		"url": "git+https://github.com/jguyet/pm2-auto-puller.git"
 	},
 	"bugs": {
-		"url": "https://github.com/ImSkully/pm2-auto-pull/issues"
+		"url": "https://github.com/jguyet/pm2-auto-puller/issues"
 	},
 	"apps": [
 		{
